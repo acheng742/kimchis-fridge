@@ -89,9 +89,11 @@
 
   .searchbar {
     max-width: 640px; margin: 8px auto 0; padding: 0 14px; width: 100%;
+    display: flex; gap: 8px;
   }
   .searchbar input {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     padding: 10px 14px;
     border-radius: 12px;
     border: 1.5px solid var(--border);
@@ -100,6 +102,17 @@
     outline: none;
   }
   .searchbar input:focus { border-color: var(--green); }
+  .searchbar select {
+    flex: 0 0 auto;
+    max-width: 42%;
+    padding: 10px 8px;
+    border-radius: 12px;
+    border: 1.5px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-size: 12.5px;
+    outline: none;
+  }
 
   /* Item cards */
   .group-label {
@@ -124,6 +137,11 @@
   .item .info { flex: 1; min-width: 0; }
   .item .name { font-weight: 600; font-size: 15.5px; text-transform: capitalize; }
   .item .meta { font-size: 12.5px; color: var(--text-soft); margin-top: 2px; }
+  .item .info { cursor: pointer; }
+  .exp-badge { font-size: 12px; font-weight: 700; margin-top: 2px; }
+  .exp-badge.exp-bad { color: var(--red); }
+  .exp-badge.exp-warn { color: var(--amber); }
+  .exp-badge.exp-ok { color: var(--text-soft); font-weight: 500; }
   .qty-controls { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
   .qty-btn {
     width: 30px; height: 30px;
@@ -346,7 +364,15 @@
 </header>
 
 <nav class="tabs" id="tabs"></nav>
-<div class="searchbar"><input type="search" id="search" placeholder="Search ingredients…" oninput="render()"></div>
+<div class="searchbar">
+  <input type="search" id="search" placeholder="Search ingredients…" oninput="render()">
+  <select id="sortSel" onchange="render()">
+    <option value="name">Name (A–Z)</option>
+    <option value="expiring">Expiring soon</option>
+    <option value="purchased-new">Newest bought</option>
+    <option value="purchased-old">Oldest bought</option>
+  </select>
+</div>
 
 <main id="main"></main>
 
@@ -359,10 +385,10 @@
 <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
 <input type="file" id="importInput" accept="application/json,.json" hidden>
 
-<!-- Manual add sheet -->
+<!-- Manual add / edit sheet -->
 <div class="overlay" id="manualOverlay">
   <div class="sheet">
-    <h2>Add ingredient <button class="close-x" onclick="closeSheet('manualOverlay')">✕</button></h2>
+    <h2><span id="manualTitle">Add ingredient</span> <button class="close-x" onclick="closeSheet('manualOverlay')">✕</button></h2>
     <div class="field"><label>Name</label><input id="mName" placeholder="e.g. chicken thighs" autocomplete="off"></div>
     <div class="row2">
       <div class="field"><label>Quantity</label><input id="mQty" type="number" inputmode="decimal" value="1" min="0" step="any"></div>
@@ -382,7 +408,12 @@
         <option value="spices">🧂 Spice drawer</option>
       </select>
     </div>
-    <button class="btn" onclick="addManual()">Add to inventory</button>
+    <div class="row2">
+      <div class="field"><label>Purchase date</label><input id="mPurchase" type="date"></div>
+      <div class="field"><label>Expiration date</label><input id="mExp" type="date"></div>
+    </div>
+    <button class="btn" id="manualSaveBtn" onclick="addManual()">Add to inventory</button>
+    <button class="btn danger" id="manualDeleteBtn" style="display:none" onclick="deleteFromEdit()">Delete item</button>
   </div>
 </div>
 
@@ -497,6 +528,28 @@ function emojiFor(name, loc) {
 }
 
 /* ---------- rendering ---------- */
+function sortComparator(mode) {
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  if (mode === "expiring") {
+    return (a, b) => {
+      const ea = a.expDate || "9999-12-31", eb = b.expDate || "9999-12-31";
+      return ea === eb ? byName(a, b) : (ea < eb ? -1 : 1);
+    };
+  }
+  if (mode === "purchased-new") {
+    return (a, b) => {
+      const pa = a.purchaseDate || "0000-01-01", pb = b.purchaseDate || "0000-01-01";
+      return pa === pb ? byName(a, b) : (pa > pb ? -1 : 1);
+    };
+  }
+  if (mode === "purchased-old") {
+    return (a, b) => {
+      const pa = a.purchaseDate || "9999-12-31", pb = b.purchaseDate || "9999-12-31";
+      return pa === pb ? byName(a, b) : (pa < pb ? -1 : 1);
+    };
+  }
+  return byName;
+}
 function render() {
   const tabsEl = document.getElementById("tabs");
   const counts = { all: items.length };
@@ -506,7 +559,8 @@ function render() {
     Object.entries(LOCATIONS).map(([k, v]) => tabBtn(k, `${v.emoji} ${v.label}`, counts[k])).join("");
 
   const q = document.getElementById("search").value.trim().toLowerCase();
-  let list = items.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const sortMode = document.getElementById("sortSel").value;
+  let list = items.slice().sort(sortComparator(sortMode));
   if (activeTab !== "all") list = list.filter(i => i.location === activeTab);
   if (q) list = list.filter(i => i.name.toLowerCase().includes(q));
 
@@ -519,15 +573,19 @@ function render() {
     return;
   }
 
+  // Group by location for the default alphabetical "All" view (location is implied
+  // by the group header); any date-based sort shows one flat cross-location list
+  // instead, since the point is to see what's expiring soonest across the whole kitchen.
   let html = "";
-  if (activeTab === "all") {
+  if (activeTab === "all" && sortMode === "name") {
     for (const [k, v] of Object.entries(LOCATIONS)) {
       const group = list.filter(i => i.location === k);
       if (!group.length) continue;
-      html += `<div class="group-label">${v.emoji} ${v.label}</div>` + group.map(itemHTML).join("");
+      html += `<div class="group-label">${v.emoji} ${v.label}</div>` + group.map(i => itemHTML(i, false)).join("");
     }
   } else {
-    html = list.map(itemHTML).join("");
+    const showLocation = activeTab === "all";
+    html = list.map(i => itemHTML(i, showLocation)).join("");
   }
   main.innerHTML = html;
 }
@@ -536,14 +594,32 @@ function tabBtn(key, label, count) {
 }
 function setTab(k) { activeTab = k; render(); }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
-function itemHTML(i) {
+function formatShortDate(isoDateStr) {
+  const d = new Date(isoDateStr + "T00:00:00");
+  if (isNaN(d)) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+function expirationInfo(i) {
+  if (!i.expDate) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const exp = new Date(i.expDate + "T00:00:00");
+  const days = Math.round((exp - today) / 86400000);
+  if (days < 0) return { text: `⚠️ Expired ${Math.abs(days)}d ago`, cls: "exp-bad" };
+  if (days === 0) return { text: `⚠️ Expires today`, cls: "exp-bad" };
+  if (days <= 3) return { text: `⏰ Expires in ${days}d`, cls: "exp-warn" };
+  return { text: `Exp ${formatShortDate(i.expDate)}`, cls: "exp-ok" };
+}
+function itemHTML(i, showLocation) {
   const qty = i.qty % 1 === 0 ? i.qty : i.qty.toFixed(1);
-  const when = i.addedAt ? new Date(i.addedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+  const bought = i.purchaseDate ? ` · bought ${formatShortDate(i.purchaseDate)}` : "";
+  const locTag = showLocation ? ` · ${LOCATIONS[i.location].emoji} ${LOCATIONS[i.location].label}` : "";
+  const exp = expirationInfo(i);
   return `<div class="item">
     <div class="emoji">${emojiFor(i.name, i.location)}</div>
-    <div class="info">
+    <div class="info" onclick="openManual('${i.id}')" title="Tap to edit">
       <div class="name">${esc(i.name)}</div>
-      <div class="meta">${qty}${i.unit ? " " + esc(i.unit) : ""} · added ${when}</div>
+      <div class="meta">${qty}${i.unit ? " " + esc(i.unit) : ""}${bought}${locTag}</div>
+      ${exp ? `<div class="exp-badge ${exp.cls}">${exp.text}</div>` : ""}
     </div>
     <div class="qty-controls">
       <button class="qty-btn" onclick="bumpQty('${i.id}',-1)">−</button>
@@ -555,13 +631,20 @@ function itemHTML(i) {
 }
 
 /* ---------- item ops ---------- */
-function addItem(name, qty, unit, location) {
+function addItem(name, qty, unit, location, purchaseDate, expDate) {
   name = String(name || "").trim();
   if (!name) return false;
+  purchaseDate = purchaseDate || "";
+  expDate = expDate || "";
+  // Merge only when the dates match too — a differently-dated batch of the same
+  // ingredient (e.g. an older carton of milk) is tracked as its own row so it can be
+  // sorted/expired independently, instead of being blended into one combined quantity.
   const existing = items.find(i =>
-    i.name.toLowerCase() === name.toLowerCase() && i.location === location && (i.unit || "") === (unit || ""));
+    i.name.toLowerCase() === name.toLowerCase() && i.location === location &&
+    (i.unit || "") === (unit || "") &&
+    (i.purchaseDate || "") === purchaseDate && (i.expDate || "") === expDate);
   if (existing) { existing.qty += (qty || 1); }
-  else items.push({ id: uid(), name, qty: qty || 1, unit: unit || "", location, addedAt: Date.now() });
+  else items.push({ id: uid(), name, qty: qty || 1, unit: unit || "", location, purchaseDate, expDate, addedAt: Date.now() });
   save(); render();
   return true;
 }
@@ -574,23 +657,59 @@ function bumpQty(id, d) {
 }
 function removeItem(id) { items = items.filter(i => i.id !== id); save(); render(); }
 
-/* ---------- manual add ---------- */
-function openManual() {
-  if (activeTab !== "all" && LOCATIONS[activeTab]) document.getElementById("mLoc").value = activeTab;
-  document.getElementById("mName").value = "";
-  document.getElementById("mQty").value = 1;
+/* ---------- manual add / edit ---------- */
+let editingId = null;
+function openManual(id) {
+  editingId = id || null;
+  const it = editingId ? items.find(i => i.id === editingId) : null;
+  if (editingId && !it) editingId = null; // stale id, fall back to add mode
+
+  document.getElementById("manualTitle").textContent = it ? "Edit ingredient" : "Add ingredient";
+  document.getElementById("mName").value = it ? it.name : "";
+  document.getElementById("mQty").value = it ? it.qty : 1;
+  document.getElementById("mUnit").value = it ? (it.unit || "") : "";
+  document.getElementById("mLoc").value = it ? it.location :
+    (activeTab !== "all" && LOCATIONS[activeTab] ? activeTab : "fridge");
+  document.getElementById("mPurchase").value = it ? (it.purchaseDate || "") :
+    new Date().toISOString().slice(0, 10);
+  document.getElementById("mExp").value = it ? (it.expDate || "") : "";
+  document.getElementById("manualSaveBtn").textContent = it ? "Save changes" : "Add to inventory";
+  document.getElementById("manualDeleteBtn").style.display = it ? "block" : "none";
+
   openSheet("manualOverlay");
-  setTimeout(() => document.getElementById("mName").focus(), 250);
+  if (!it) setTimeout(() => document.getElementById("mName").focus(), 250);
 }
 function addManual() {
   const name = document.getElementById("mName").value;
   const qty = parseFloat(document.getElementById("mQty").value) || 1;
   const unit = document.getElementById("mUnit").value;
   const loc = document.getElementById("mLoc").value;
-  if (addItem(name, qty, unit, loc)) {
+  const purchaseDate = document.getElementById("mPurchase").value;
+  const expDate = document.getElementById("mExp").value;
+  if (!name.trim()) return;
+
+  if (editingId) {
+    const it = items.find(i => i.id === editingId);
+    if (it) {
+      Object.assign(it, { name: name.trim(), qty, unit, location: loc, purchaseDate, expDate });
+      save(); render();
+      toast(`Saved ${name.trim()} ✓`);
+    }
+    editingId = null;
+    closeSheet("manualOverlay");
+    return;
+  }
+  if (addItem(name, qty, unit, loc, purchaseDate, expDate)) {
     closeSheet("manualOverlay");
     toast(`Added ${name.trim()} ✓`);
   }
+}
+function deleteFromEdit() {
+  if (!editingId) return;
+  if (!confirm("Remove this item?")) return;
+  removeItem(editingId);
+  editingId = null;
+  closeSheet("manualOverlay");
 }
 
 /* ---------- sheets & toast ---------- */
@@ -646,7 +765,9 @@ document.getElementById("importInput").addEventListener("change", async e => {
     const arr = Array.isArray(data) ? data : data.items;
     if (!Array.isArray(arr)) throw new Error("bad format");
     for (const it of arr) {
-      if (it && it.name && LOCATIONS[it.location]) addItem(it.name, Number(it.qty) || 1, it.unit || "", it.location);
+      if (it && it.name && LOCATIONS[it.location]) {
+        addItem(it.name, Number(it.qty) || 1, it.unit || "", it.location, it.purchaseDate || "", it.expDate || "");
+      }
     }
     closeSheet("settingsOverlay");
     toast("Backup imported ✓");
@@ -844,6 +965,7 @@ function renderPhotoReview(found) {
 function confirmPhotoAdd() {
   const body = document.getElementById("photoBody");
   const found = JSON.parse(body.dataset.found || "[]");
+  const today = new Date().toISOString().slice(0, 10);
   let added = 0;
   body.querySelectorAll("input[type=checkbox]").forEach(cb => {
     if (!cb.checked) return;
@@ -851,11 +973,14 @@ function confirmPhotoAdd() {
     const f = found[idx];
     const sel = body.querySelector(`select[data-locidx="${idx}"]`);
     const loc = sel ? sel.value : (LOCATIONS[f.location] ? f.location : "pantry");
-    if (addItem(f.name, Number(f.qty) > 0 ? Number(f.qty) : 1, f.unit || "", loc)) added++;
+    // AI can't know the expiration date, but a photo is usually taken of what's
+    // in the kitchen right now, so default purchase date to today; edit later to add
+    // an expiration date by tapping the item.
+    if (addItem(f.name, Number(f.qty) > 0 ? Number(f.qty) : 1, f.unit || "", loc, today, "")) added++;
   });
   closeSheet("photoOverlay");
   pendingPhoto = null;
-  toast(added ? `Added ${added} ingredient${added > 1 ? "s" : ""} ✓` : "Nothing selected");
+  toast(added ? `Added ${added} ingredient${added > 1 ? "s" : ""} ✓ — tap any item to add an expiration date` : "Nothing selected");
 }
 
 /* ---------- meal ideas ---------- */
