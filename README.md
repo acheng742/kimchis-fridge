@@ -1,4 +1,4 @@
-# 🧊 Kimchi's Fridge
+# 🥬 Kimchi's Fridge
 
 A single-page app to track every ingredient in your refrigerator, freezer, pantry, and spice drawer — with AI photo recognition and meal suggestions.
 
