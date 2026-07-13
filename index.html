@@ -501,6 +501,20 @@
     <button class="btn secondary" onclick="exportData()">⬇️ Export backup</button>
     <button class="btn secondary" onclick="document.getElementById('importInput').click()">⬆️ Import backup</button>
     <button class="btn danger" onclick="clearAll()">Delete all inventory</button>
+
+    <h2 style="margin-top:22px">👥 Share with your partner</h2>
+    <div class="field">
+      <label>Google Sheet sync URL</label>
+      <input id="sheetUrl" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Shared secret</label>
+      <input id="sheetSecret" placeholder="the secret you set in the script" autocomplete="off">
+      <div class="hint">Set this up once, then give your partner the same URL and secret to paste into her copy of the app. Both of you will automatically stay in sync.</div>
+    </div>
+    <button class="btn secondary" onclick="saveSheetSettings()">Save sync settings</button>
+    <button class="btn secondary" onclick="syncNow(false)">🔄 Sync now</button>
+    <div class="hint" id="syncStatus"></div>
   </div>
 </div>
 
@@ -519,6 +533,8 @@ const LOCATIONS = {
 const LS_DATA = "kitcheninv_data_v1";
 const LS_KEY  = "kitcheninv_apikey";
 const LS_MODEL = "kitcheninv_model";
+const LS_SHEET_URL = "kitcheninv_sheet_url";
+const LS_SHEET_SECRET = "kitcheninv_sheet_secret";
 
 let items = [];
 let activeTab = "all";
@@ -528,8 +544,19 @@ function load() {
   catch { items = []; }
   if (!Array.isArray(items)) items = [];
 }
-function save() {
+// live() is the working set everywhere in the UI — items marked `deleted` are kept
+// around (as "tombstones") purely so a deletion can be synced to the shared sheet;
+// without them a deletion made on one device could get silently resurrected by a
+// sync that only knows how to add/update, never remove.
+function live() { return items.filter(i => !i.deleted); }
+let syncDebounceTimer = null;
+function save(skipSyncTrigger) {
   localStorage.setItem(LS_DATA, JSON.stringify(items));
+  if (skipSyncTrigger) return;
+  if (localStorage.getItem(LS_SHEET_URL)) {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = setTimeout(() => syncNow(true), 1500);
+  }
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
@@ -583,22 +610,23 @@ function sortComparator(mode) {
 }
 function render() {
   const tabsEl = document.getElementById("tabs");
-  const counts = { all: items.length };
-  for (const k of Object.keys(LOCATIONS)) counts[k] = items.filter(i => i.location === k).length;
+  const liveItems = live();
+  const counts = { all: liveItems.length };
+  for (const k of Object.keys(LOCATIONS)) counts[k] = liveItems.filter(i => i.location === k).length;
   tabsEl.innerHTML =
     tabBtn("all", "🏠 All", counts.all) +
     Object.entries(LOCATIONS).map(([k, v]) => tabBtn(k, `${v.emoji} ${v.label}`, counts[k])).join("");
 
   const q = document.getElementById("search").value.trim().toLowerCase();
   const sortMode = document.getElementById("sortSel").value;
-  let list = items.slice().sort(sortComparator(sortMode));
+  let list = liveItems.slice().sort(sortComparator(sortMode));
   if (activeTab !== "all") list = list.filter(i => i.location === activeTab);
   if (q) list = list.filter(i => i.name.toLowerCase().includes(q));
 
   const main = document.getElementById("main");
   if (!list.length) {
     main.innerHTML = `<div class="empty"><div class="big">🧺</div>${
-      items.length ? "No matches here." :
+      liveItems.length ? "No matches here." :
       "Your kitchen is empty!<br>Snap a <b>📷 Photo</b> of your groceries or tap <b>＋ Add</b> to get started."
     }</div>`;
     return;
@@ -671,22 +699,32 @@ function addItem(name, qty, unit, location, purchaseDate, expDate) {
   // ingredient (e.g. an older carton of milk) is tracked as its own row so it can be
   // sorted/expired independently, instead of being blended into one combined quantity.
   const existing = items.find(i =>
-    i.name.toLowerCase() === name.toLowerCase() && i.location === location &&
+    !i.deleted && i.name.toLowerCase() === name.toLowerCase() && i.location === location &&
     (i.unit || "") === (unit || "") &&
     (i.purchaseDate || "") === purchaseDate && (i.expDate || "") === expDate);
-  if (existing) { existing.qty += (qty || 1); }
-  else items.push({ id: uid(), name, qty: qty || 1, unit: unit || "", location, purchaseDate, expDate, addedAt: Date.now() });
+  if (existing) { existing.qty += (qty || 1); existing.updatedAt = Date.now(); }
+  else items.push({
+    id: uid(), name, qty: qty || 1, unit: unit || "", location, purchaseDate, expDate,
+    addedAt: Date.now(), updatedAt: Date.now(), deleted: false
+  });
   save(); render();
   return true;
 }
 function bumpQty(id, d) {
-  const it = items.find(i => i.id === id);
+  const it = items.find(i => i.id === id && !i.deleted);
   if (!it) return;
   it.qty = Math.round((it.qty + d) * 10) / 10;
-  if (it.qty <= 0) items = items.filter(i => i.id !== id);
+  it.updatedAt = Date.now();
+  if (it.qty <= 0) it.deleted = true;
   save(); render();
 }
-function removeItem(id) { items = items.filter(i => i.id !== id); save(); render(); }
+function removeItem(id) {
+  const it = items.find(i => i.id === id);
+  if (!it) return;
+  it.deleted = true;
+  it.updatedAt = Date.now();
+  save(); render();
+}
 
 /* ---------- manual add / edit ---------- */
 let editingId = null;
@@ -722,7 +760,7 @@ function addManual() {
   if (editingId) {
     const it = items.find(i => i.id === editingId);
     if (it) {
-      Object.assign(it, { name: name.trim(), qty, unit, location: loc, purchaseDate, expDate });
+      Object.assign(it, { name: name.trim(), qty, unit, location: loc, purchaseDate, expDate, updatedAt: Date.now() });
       save(); render();
       toast(`Saved ${name.trim()} ✓`);
     }
@@ -765,6 +803,9 @@ function toast(msg) {
 function openSettings() {
   document.getElementById("apiKey").value = localStorage.getItem(LS_KEY) || "";
   document.getElementById("modelSel").value = localStorage.getItem(LS_MODEL) || "claude-haiku-4-5";
+  document.getElementById("sheetUrl").value = localStorage.getItem(LS_SHEET_URL) || "";
+  document.getElementById("sheetSecret").value = localStorage.getItem(LS_SHEET_SECRET) || "";
+  document.getElementById("syncStatus").textContent = "";
   openSheet("settingsOverlay");
 }
 function saveSettings() {
@@ -772,6 +813,12 @@ function saveSettings() {
   localStorage.setItem(LS_MODEL, document.getElementById("modelSel").value);
   closeSheet("settingsOverlay");
   toast("Settings saved ✓");
+}
+function saveSheetSettings() {
+  localStorage.setItem(LS_SHEET_URL, document.getElementById("sheetUrl").value.trim());
+  localStorage.setItem(LS_SHEET_SECRET, document.getElementById("sheetSecret").value.trim());
+  toast("Sync settings saved ✓");
+  if (localStorage.getItem(LS_SHEET_URL)) syncNow(false);
 }
 function needKey() {
   const k = localStorage.getItem(LS_KEY);
@@ -781,7 +828,7 @@ function needKey() {
   return null;
 }
 function exportData() {
-  const blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), items }, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), items: live() }, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `kimchis-fridge-${new Date().toISOString().slice(0, 10)}.json`;
@@ -809,6 +856,71 @@ function clearAll() {
   if (!confirm("Delete ALL inventory items? This can't be undone.")) return;
   items = []; save(); render();
   closeSheet("settingsOverlay");
+}
+
+/* ---------- Google Sheet sync (shared inventory) ---------- */
+// The sheet is treated as the shared source of truth. Each sync pulls the
+// sheet's current items, merges them with what's stored locally (per-item,
+// whichever side has the newer `updatedAt` wins — including tombstoned
+// deletions, so a deletion made on one device correctly propagates instead of
+// getting silently resurrected), saves the merged result locally, then pushes
+// it back up so the sheet reflects the merge too.
+function mergeItems(localItems, remoteItems) {
+  const map = new Map();
+  localItems.forEach(it => map.set(it.id, it));
+  (remoteItems || []).forEach(rit => {
+    const lit = map.get(rit.id);
+    if (!lit || (rit.updatedAt || 0) > (lit.updatedAt || 0)) map.set(rit.id, rit);
+  });
+  return Array.from(map.values());
+}
+async function sheetFetch(method, payloadItems) {
+  const url = localStorage.getItem(LS_SHEET_URL);
+  const secret = localStorage.getItem(LS_SHEET_SECRET) || "";
+  if (!url) throw new Error("Sync isn't set up yet");
+  let res;
+  if (method === "GET") {
+    res = await fetch(url + "?secret=" + encodeURIComponent(secret));
+  } else {
+    // text/plain avoids a CORS preflight that Apps Script web apps don't handle;
+    // the script itself still parses the body as JSON regardless of this header.
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ secret, items: payloadItems })
+    });
+  }
+  const j = await res.json();
+  if (j.error) throw new Error(j.error === "unauthorized" ? "Wrong sync URL or secret" : j.error);
+  return j;
+}
+let syncing = false;
+function setSyncStatus(text, isError) {
+  const el = document.getElementById("syncStatus");
+  if (el) { el.textContent = text; el.style.color = isError ? "var(--red)" : ""; }
+}
+async function syncNow(showToast) {
+  if (!localStorage.getItem(LS_SHEET_URL)) {
+    if (showToast) toast("Add a sync URL in Settings first");
+    return;
+  }
+  if (syncing) return;
+  syncing = true;
+  setSyncStatus("Syncing…");
+  try {
+    const remote = await sheetFetch("GET");
+    items = mergeItems(items, remote.items || []);
+    save(true); // skip re-triggering the debounced push — we push explicitly below
+    render();
+    await sheetFetch("POST", items);
+    setSyncStatus(`Last synced ${new Date().toLocaleTimeString()}`);
+    if (showToast) toast("Synced with your partner ✓");
+  } catch (err) {
+    setSyncStatus(`Sync failed: ${err.message}`, true);
+    if (showToast) toast("Sync failed — check your sync settings");
+  } finally {
+    syncing = false;
+  }
 }
 
 /* ---------- Claude API ---------- */
@@ -1017,7 +1129,7 @@ function confirmPhotoAdd() {
 /* ---------- meal ideas ---------- */
 function openMeals() {
   if (!needKey()) return;
-  if (!items.length) { toast("Add some ingredients first!"); return; }
+  if (!live().length) { toast("Add some ingredients first!"); return; }
   openSheet("mealsOverlay");
   fetchMeals();
 }
@@ -1025,7 +1137,7 @@ async function fetchMeals() {
   const body = document.getElementById("mealsBody");
   body.innerHTML = `<div class="spinner"></div><div class="loading-note">Thinking about what you can cook…</div>`;
   const inv = Object.entries(LOCATIONS).map(([k, v]) => {
-    const group = items.filter(i => i.location === k);
+    const group = live().filter(i => i.location === k);
     if (!group.length) return "";
     return `${v.label}: ` + group.map(i => `${i.name} (${i.qty}${i.unit ? " " + i.unit : ""})`).join(", ");
   }).filter(Boolean).join("\n");
@@ -1058,6 +1170,7 @@ Order them best-match first (fewest missing items).` }], 2500);
 /* ---------- boot ---------- */
 load();
 render();
+if (localStorage.getItem(LS_SHEET_URL)) syncNow(false);
 </script>
 </body>
 </html>
