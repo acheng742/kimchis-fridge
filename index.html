@@ -257,6 +257,26 @@
     border-radius: 12px; margin-bottom: 12px; display: block;
   }
 
+  /* Live camera capture */
+  .cam-wrap {
+    position: relative;
+    width: 100%;
+    border-radius: 14px;
+    overflow: hidden;
+    background: #000;
+    margin-bottom: 12px;
+  }
+  #camVideo {
+    width: 100%;
+    max-height: 60vh;
+    display: block;
+    object-fit: cover;
+  }
+  #camVideo.mirror { transform: scaleX(-1); }
+  .cam-actions { display: flex; gap: 10px; }
+  .cam-actions .btn { width: auto; flex: 1; margin-top: 0; }
+  .cam-actions .btn.primary-shutter { flex: 1.6; }
+
   /* Meals */
   .meal-card {
     background: var(--card);
@@ -363,6 +383,23 @@
       </select>
     </div>
     <button class="btn" onclick="addManual()">Add to inventory</button>
+  </div>
+</div>
+
+<!-- Live camera sheet -->
+<div class="overlay" id="cameraOverlay">
+  <div class="sheet">
+    <h2>Take a photo <button class="close-x" onclick="closeCameraSheet()">✕</button></h2>
+    <div class="cam-wrap">
+      <video id="camVideo" autoplay playsinline muted></video>
+      <canvas id="camCanvas" hidden></canvas>
+    </div>
+    <div class="err-box" id="camError" hidden></div>
+    <div class="cam-actions">
+      <button class="btn secondary" onclick="flipCamera()">🔄 Flip</button>
+      <button class="btn primary-shutter" id="camShutter" onclick="capturePhoto()" disabled>📸 Capture</button>
+    </div>
+    <button class="btn secondary" style="margin-top:8px" onclick="useFileInstead()">🖼 Choose a photo instead</button>
   </div>
 </div>
 
@@ -560,7 +597,11 @@ function addManual() {
 function openSheet(id) { document.getElementById(id).classList.add("open"); }
 function closeSheet(id) { document.getElementById(id).classList.remove("open"); }
 document.querySelectorAll(".overlay").forEach(o =>
-  o.addEventListener("click", e => { if (e.target === o) o.classList.remove("open"); }));
+  o.addEventListener("click", e => {
+    if (e.target !== o) return;
+    if (o.id === "cameraOverlay") stopCameraStream();
+    o.classList.remove("open");
+  }));
 let toastTimer;
 function toast(msg) {
   const t = document.getElementById("toast");
@@ -648,10 +689,81 @@ function extractJSON(text) {
 
 /* ---------- photo recognition ---------- */
 let pendingPhoto = null;
+
 function startPhoto() {
   if (!needKey()) return;
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    openCameraSheet();
+  } else {
+    document.getElementById("photoInput").click();
+  }
+}
+
+/* Live camera capture (works on phones and laptops/desktops with a webcam) */
+let camStream = null;
+let camFacing = "environment";
+async function openCameraSheet() {
+  document.getElementById("camError").hidden = true;
+  document.getElementById("camVideo").hidden = false;
+  document.getElementById("camShutter").disabled = true;
+  openSheet("cameraOverlay");
+  await startCameraStream(camFacing);
+}
+async function startCameraStream(facing) {
+  stopCameraStream();
+  const video = document.getElementById("camVideo");
+  const shutter = document.getElementById("camShutter");
+  const errBox = document.getElementById("camError");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing } },
+      audio: false
+    });
+    camStream = stream;
+    camFacing = facing;
+    video.hidden = false;
+    errBox.hidden = true;
+    video.classList.toggle("mirror", facing === "user");
+    video.srcObject = stream;
+    try { await video.play(); } catch {}
+    shutter.disabled = false;
+  } catch (err) {
+    video.hidden = true;
+    shutter.disabled = true;
+    errBox.hidden = false;
+    errBox.textContent = `⚠️ Couldn't access your camera (${err.message || err.name || "unknown error"}). You can choose a photo instead.`;
+  }
+}
+function stopCameraStream() {
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+}
+function flipCamera() {
+  startCameraStream(camFacing === "environment" ? "user" : "environment");
+}
+function closeCameraSheet() {
+  stopCameraStream();
+  closeSheet("cameraOverlay");
+}
+function useFileInstead() {
+  closeCameraSheet();
   document.getElementById("photoInput").click();
 }
+function capturePhoto() {
+  const video = document.getElementById("camVideo");
+  if (!video.videoWidth) { toast("Camera still loading — try again in a second"); return; }
+  const maxDim = 1100;
+  const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+  const c = document.getElementById("camCanvas");
+  c.width = Math.round(video.videoWidth * scale);
+  c.height = Math.round(video.videoHeight * scale);
+  c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+  const dataUrl = c.toDataURL("image/jpeg", 0.85);
+  closeCameraSheet();
+  openSheet("photoOverlay");
+  runPhotoAnalysis(dataUrl, dataUrl.split(",")[1]);
+}
+
+/* File-picker fallback (also used when the user chooses "photo instead") */
 document.getElementById("photoInput").addEventListener("change", async e => {
   const f = e.target.files[0];
   e.target.value = "";
@@ -661,7 +773,18 @@ document.getElementById("photoInput").addEventListener("change", async e => {
   body.innerHTML = `<div class="spinner"></div><div class="loading-note">Looking at your photo…</div>`;
   try {
     const { dataUrl, b64 } = await resizeImage(f, 1100);
-    pendingPhoto = dataUrl;
+    await runPhotoAnalysis(dataUrl, b64);
+  } catch (err) {
+    body.innerHTML = `<div class="err-box">⚠️ ${esc(err.message)}</div><button class="btn secondary" onclick="closeSheet('photoOverlay')">Close</button>`;
+  }
+});
+
+/* Shared: send a resized photo (dataUrl + base64) to Claude and render results */
+async function runPhotoAnalysis(dataUrl, b64) {
+  pendingPhoto = dataUrl;
+  const body = document.getElementById("photoBody");
+  body.innerHTML = `<div class="spinner"></div><div class="loading-note">Looking at your photo…</div>`;
+  try {
     const text = await callClaude([
       { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
       { type: "text", text:
@@ -674,7 +797,7 @@ Rules: use generic ingredient names (e.g. "cheddar cheese" not brand names). If 
   } catch (err) {
     body.innerHTML = `<div class="err-box">⚠️ ${esc(err.message)}</div><button class="btn secondary" onclick="closeSheet('photoOverlay')">Close</button>`;
   }
-});
+}
 function resizeImage(file, maxDim) {
   return new Promise((resolve, reject) => {
     const img = new Image();
