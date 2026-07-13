@@ -1143,43 +1143,78 @@ function confirmPhotoAdd() {
 }
 
 /* ---------- meal ideas ---------- */
+const MEALS_BATCH = 5;
+let mealsList = [];
+let mealsLoading = false;
+
 function openMeals() {
   if (!needKey()) return;
   if (!live().length) { toast("Add some ingredients first!"); return; }
+  mealsList = [];
   openSheet("mealsOverlay");
-  fetchMeals();
+  loadMeals();
 }
-async function fetchMeals() {
-  const body = document.getElementById("mealsBody");
-  body.innerHTML = `<div class="spinner"></div><div class="loading-note">Thinking about what you can cook…</div>`;
-  const inv = Object.entries(LOCATIONS).map(([k, v]) => {
-    const group = live().filter(i => i.location === k);
-    if (!group.length) return "";
-    return `${v.label}: ` + group.map(i => `${i.name} (${i.qty}${i.unit ? " " + i.unit : ""})`).join(", ");
-  }).filter(Boolean).join("\n");
-  try {
-    const text = await callClaude([{ type: "text", text:
-`Here is my current kitchen inventory:
 
-${inv}
-
-Suggest 4 meals I could realistically cook. Prefer meals using ONLY what I have; it's OK if a meal needs 1-3 common extra items. Respond with ONLY a JSON array, no other text. Each element:
-{"name":"meal name","time":"e.g. 30 min","description":"2 short sentences: what it is and roughly how to make it","uses":["ingredient names from my inventory"],"missing":["items I'd need to buy, empty array if none"]}
-Order them best-match first (fewest missing items).` }], 2500);
-    const meals = extractJSON(text);
-    if (!Array.isArray(meals) || !meals.length) throw new Error("No suggestions returned. Try again.");
-    body.innerHTML = meals.map(m => `
+function mealCardHTML(m) {
+  return `
       <div class="meal-card">
         <h3>${esc(m.name || "Meal")}</h3>
         <div class="mtime">⏱ ${esc(m.time || "—")}</div>
         <p>${esc(m.description || "")}</p>
         ${Array.isArray(m.uses) && m.uses.length ? `<div class="pill-label">From your kitchen</div><div class="pill-row">${m.uses.map(u => `<span class="pill">${esc(u)}</span>`).join("")}</div>` : ""}
         ${Array.isArray(m.missing) && m.missing.length ? `<div class="pill-label">You'd need</div><div class="pill-row">${m.missing.map(u => `<span class="pill missing">${esc(u)}</span>`).join("")}</div>` : ""}
-      </div>`).join("") +
-      `<button class="btn secondary" onclick="fetchMeals()">🔄 More ideas</button>`;
+      </div>`;
+}
+
+function renderMeals() {
+  const body = document.getElementById("mealsBody");
+  body.innerHTML = mealsList.map(mealCardHTML).join("") +
+    `<button class="btn secondary" id="mealsMoreBtn" onclick="loadMeals()" ${mealsLoading ? "disabled" : ""}>${mealsLoading ? "Thinking of more…" : "🔄 More ideas"}</button>`;
+}
+
+async function loadMeals() {
+  if (mealsLoading) return;
+  mealsLoading = true;
+  const body = document.getElementById("mealsBody");
+  if (!mealsList.length) {
+    body.innerHTML = `<div class="spinner"></div><div class="loading-note">Thinking about what you can cook…</div>`;
+  } else {
+    renderMeals(); // keep existing cards visible, show a disabled "loading" state on the button
+  }
+  const inv = Object.entries(LOCATIONS).map(([k, v]) => {
+    const group = live().filter(i => i.location === k);
+    if (!group.length) return "";
+    return `${v.label}: ` + group.map(i => `${i.name} (${i.qty}${i.unit ? " " + i.unit : ""})`).join(", ");
+  }).filter(Boolean).join("\n");
+  const already = mealsList.map(m => m.name).filter(Boolean);
+  try {
+    const text = await callClaude([{ type: "text", text:
+`Here is my current kitchen inventory:
+
+${inv}
+${already.length ? `\nI've already been suggested these meals — do NOT repeat them, come up with different ones:\n${already.join(", ")}` : ""}
+
+Suggest ${MEALS_BATCH} meals I could realistically cook. Prefer meals using ONLY what I have; it's OK if a meal needs 1-3 common extra items. Respond with ONLY a JSON array, no other text. Each element:
+{"name":"meal name","time":"e.g. 30 min","description":"2 short sentences: what it is and roughly how to make it","uses":["ingredient names from my inventory"],"missing":["items I'd need to buy, empty array if none"]}
+Order them best-match first (fewest missing items).` }], 2500);
+    const meals = extractJSON(text);
+    if (!Array.isArray(meals) || !meals.length) throw new Error("No suggestions returned. Try again.");
+    mealsList = mealsList.concat(meals);
+    mealsLoading = false;
+    renderMeals();
+    if (mealsList.length > meals.length) {
+      const btn = document.getElementById("mealsMoreBtn");
+      if (btn) btn.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
   } catch (err) {
-    body.innerHTML = `<div class="err-box">⚠️ ${esc(err.message)}</div>
-      <button class="btn secondary" onclick="fetchMeals()">Try again</button>`;
+    mealsLoading = false;
+    if (!mealsList.length) {
+      body.innerHTML = `<div class="err-box">⚠️ ${esc(err.message)}</div>
+      <button class="btn secondary" onclick="loadMeals()">Try again</button>`;
+    } else {
+      renderMeals();
+      toast("Couldn't load more ideas — try again");
+    }
   }
 }
 
