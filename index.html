@@ -235,6 +235,7 @@
     border-radius: 20px 20px 0 0;
     padding: 20px 18px calc(30px + env(safe-area-inset-bottom));
     overflow-y: auto;
+    overflow-x: hidden;
     animation: slideup .22s ease;
   }
   @keyframes slideup { from { transform: translateY(40px); opacity: .4; } to { transform: none; opacity: 1; } }
@@ -266,7 +267,15 @@
      with min-width:0. Stack that specific row instead of forcing two cramped columns;
      other .row2 pairs (e.g. Quantity/Unit) are narrow enough to stay side by side. */
   @media (max-width: 480px) {
+    /* iOS Safari has a known bug where a flex item's cross-axis "stretch" sizing isn't
+       reliably applied to a native <input type="date">'s intrinsic width once the row
+       switches to column direction — the date input falls back to its own wide
+       locale-formatted intrinsic size instead of the container width. Give the field
+       (and the input itself) an explicit 100% width here instead of relying on flex
+       stretch, so Safari has a definite value to size against. */
     .row2.dates { flex-direction: column; gap: 0; }
+    .row2.dates .field { flex: none; width: 100%; }
+    .row2.dates .field input[type="date"] { width: 100%; }
   }
   .btn {
     width: 100%;
