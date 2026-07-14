@@ -241,6 +241,10 @@
   @keyframes slideup { from { transform: translateY(40px); opacity: .4; } to { transform: none; opacity: 1; } }
   .sheet h2 { font-size: 18px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
   .sheet .close-x { background: none; border: none; font-size: 22px; color: var(--text-soft); cursor: pointer; padding: 4px 8px; }
+  .confirm-sheet { max-width: 420px; }
+  .confirm-msg { font-size: 15px; color: var(--text); line-height: 1.5; margin-bottom: 4px; }
+  .confirm-actions { display: flex; gap: 10px; margin-top: 18px; }
+  .confirm-actions .btn { width: auto; flex: 1; margin-top: 0; }
   .field { margin-bottom: 12px; }
   .field label { display: block; font-size: 13px; font-weight: 600; color: var(--text-soft); margin-bottom: 5px; }
   .field input, .field select {
@@ -534,6 +538,21 @@
   </div>
 </div>
 
+<!-- Delete confirmation sheet (reused for single-item and delete-all). Placed last in
+     the DOM (after every other overlay) so it always stacks on top regardless of which
+     sheet — the item list, the edit sheet, or settings — triggered it (overlays share
+     the same z-index, so later DOM order wins). -->
+<div class="overlay" id="confirmOverlay">
+  <div class="sheet confirm-sheet">
+    <h2><span id="confirmTitle">Delete item?</span> <button class="close-x" onclick="closeSheet('confirmOverlay')">✕</button></h2>
+    <p class="confirm-msg" id="confirmMsg"></p>
+    <div class="confirm-actions">
+      <button class="btn secondary" onclick="closeSheet('confirmOverlay')">Cancel</button>
+      <button class="btn danger" id="confirmDangerBtn">Delete</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -701,7 +720,7 @@ function itemHTML(i, showLocation) {
       <span class="qty-val">${qty}</span>
       <button class="qty-btn" onclick="bumpQty('${i.id}',1)">＋</button>
     </div>
-    <button class="del-btn" onclick="removeItem('${i.id}')" title="Remove">🗑</button>
+    <button class="del-btn" onclick="confirmDeleteItem('${i.id}')" title="Remove">🗑</button>
   </div>`;
 }
 
@@ -740,6 +759,14 @@ function removeItem(id) {
   it.deleted = true;
   it.updatedAt = Date.now();
   save(); render();
+}
+function confirmDeleteItem(id) {
+  const it = items.find(i => i.id === id && !i.deleted);
+  if (!it) return;
+  confirmAction(`Remove ${it.name} from your inventory?`, () => {
+    removeItem(id);
+    toast(`Removed ${it.name}`);
+  });
 }
 
 /* ---------- manual add / edit ---------- */
@@ -791,15 +818,32 @@ function addManual() {
 }
 function deleteFromEdit() {
   if (!editingId) return;
-  if (!confirm("Remove this item?")) return;
-  removeItem(editingId);
-  editingId = null;
-  closeSheet("manualOverlay");
+  const it = items.find(i => i.id === editingId);
+  const id = editingId;
+  confirmAction(`Remove ${it ? it.name : "this item"} from your inventory?`, () => {
+    removeItem(id);
+    editingId = null;
+    closeSheet("manualOverlay");
+  });
 }
 
 /* ---------- sheets & toast ---------- */
 function openSheet(id) { document.getElementById(id).classList.add("open"); }
 function closeSheet(id) { document.getElementById(id).classList.remove("open"); }
+
+/* Generic destructive-action confirmation, reused for single-item delete and
+   delete-all. Backdrop click / ✕ / Cancel all just close the sheet with no
+   side effect (same safe default as every other overlay in the app); only the
+   danger button runs the callback. */
+function confirmAction(message, onConfirm, opts) {
+  opts = opts || {};
+  document.getElementById("confirmTitle").textContent = opts.title || "Delete item?";
+  document.getElementById("confirmMsg").textContent = message;
+  const btn = document.getElementById("confirmDangerBtn");
+  btn.textContent = opts.confirmLabel || "Delete";
+  btn.onclick = () => { closeSheet("confirmOverlay"); onConfirm(); };
+  openSheet("confirmOverlay");
+}
 document.querySelectorAll(".overlay").forEach(o =>
   o.addEventListener("click", e => {
     if (e.target !== o) return;
@@ -869,9 +913,17 @@ document.getElementById("importInput").addEventListener("change", async e => {
   e.target.value = "";
 });
 function clearAll() {
-  if (!confirm("Delete ALL inventory items? This can't be undone.")) return;
-  items = []; save(); render();
-  closeSheet("settingsOverlay");
+  const count = live().length;
+  if (!count) { toast("Inventory is already empty"); return; }
+  confirmAction(
+    `Delete all ${count} item${count === 1 ? "" : "s"} from your inventory? This can't be undone.`,
+    () => {
+      items = []; save(); render();
+      closeSheet("settingsOverlay");
+      toast("Inventory cleared");
+    },
+    { title: "Delete all inventory?", confirmLabel: "Delete all" }
+  );
 }
 
 /* ---------- Google Sheet sync (shared inventory) ---------- */
