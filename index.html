@@ -357,6 +357,16 @@
   .meal-card h3 { font-size: 16.5px; color: var(--green-dark); margin-bottom: 4px; }
   .meal-card .mtime { font-size: 12.5px; color: var(--amber); font-weight: 700; margin-bottom: 8px; }
   .meal-card p { font-size: 14px; line-height: 1.55; color: var(--text); margin-bottom: 10px; }
+  .anti-inflam {
+    background: var(--green-light);
+    color: var(--green-dark);
+    border-radius: 10px;
+    padding: 9px 11px;
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+  .anti-inflam b { font-weight: 700; }
   .pill-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
   .pill {
     font-size: 12px; font-weight: 600;
@@ -496,7 +506,8 @@
 <!-- Meals sheet -->
 <div class="overlay" id="mealsOverlay">
   <div class="sheet">
-    <h2>Meal ideas <button class="close-x" onclick="closeSheet('mealsOverlay')">✕</button></h2>
+    <h2>🌿 Anti-inflammatory meals <button class="close-x" onclick="closeSheet('mealsOverlay')">✕</button></h2>
+    <p class="hint" style="margin-bottom:12px">Every suggestion here is built around anti-inflammatory eating — leaning on ingredients like fatty fish, olive oil, leafy greens, berries, nuts, turmeric, and ginger, and steering away from refined sugar, fried food, and heavily processed ingredients. Each meal explains which ingredients are doing the work.</p>
     <div id="mealsBody"></div>
   </div>
 </div>
@@ -1238,6 +1249,7 @@ function mealCardHTML(m) {
         <h3>${esc(m.name || "Meal")}</h3>
         <div class="mtime">⏱ ${esc(m.time || "—")}</div>
         <p>${esc(m.description || "")}</p>
+        ${m.antiInflammatory ? `<div class="anti-inflam">🌿 <b>Why it's anti-inflammatory:</b> ${esc(m.antiInflammatory)}</div>` : ""}
         ${Array.isArray(m.uses) && m.uses.length ? `<div class="pill-label">From your kitchen</div><div class="pill-row">${m.uses.map(u => `<span class="pill">${esc(u)}</span>`).join("")}</div>` : ""}
         ${Array.isArray(m.missing) && m.missing.length ? `<div class="pill-label">You'd need</div><div class="pill-row">${m.missing.map(u => `<span class="pill missing">${esc(u)}</span>`).join("")}</div>` : ""}
       </div>`;
@@ -1272,9 +1284,10 @@ async function loadMeals() {
 ${inv}
 ${already.length ? `\nI've already been suggested these meals — do NOT repeat them or suggest close variations of them (e.g. another stir-fry, another pasta dish, another sandwich if I already have one of those), come up with genuinely different ideas:\n${already.join(", ")}` : ""}
 
-Suggest ${count} meals I could realistically cook. Make sure the ${count} meals are meaningfully varied from EACH OTHER too — mix up proteins (or vegetarian), cuisines, and cooking methods (e.g. don't suggest three different stir-fries in the same batch) rather than small variations on the same dish. Prefer meals using ONLY what I have; it's OK if a meal needs 1-3 common extra items. Respond with ONLY a JSON array, no other text. Each element:
-{"name":"meal name","time":"e.g. 30 min","description":"2 short sentences: what it is and roughly how to make it","uses":["ingredient names from my inventory"],"missing":["items I'd need to buy, empty array if none"]}
-Order them best-match first (fewest missing items).` }], Math.round(count * 480 + 300));
+Suggest ${count} meals I could realistically cook. These must ALL be genuinely anti-inflammatory meals — build them around anti-inflammatory foods (fatty fish like salmon, leafy greens, berries, olive oil, nuts and seeds, turmeric, ginger, garlic, whole grains, legumes, colorful vegetables) and avoid or minimize pro-inflammatory ingredients (refined sugar, fried food, refined/white-flour carbs, processed or cured meat, trans fats, excessive red meat). If my inventory doesn't lean anti-inflammatory, prefer the closest anti-inflammatory-friendly meal you can still make from it, using 1-3 common extra items if that meaningfully improves it.
+Make sure the ${count} meals are meaningfully varied from EACH OTHER too — mix up proteins (or vegetarian), cuisines, and cooking methods (e.g. don't suggest three different stir-fries in the same batch) rather than small variations on the same dish. Respond with ONLY a JSON array, no other text. Each element:
+{"name":"meal name","time":"e.g. 30 min","description":"2 short sentences: what it is and roughly how to make it","antiInflammatory":"1-2 sentences on specifically which ingredients in THIS meal are anti-inflammatory and why (e.g. the mechanism — omega-3s, antioxidants/polyphenols, curcumin, fiber, etc.)","uses":["ingredient names from my inventory"],"missing":["items I'd need to buy, empty array if none"]}
+Order them best-match first (fewest missing items).` }], Math.round(count * 600 + 300));
     const meals = extractJSON(text);
     if (!Array.isArray(meals) || !meals.length) throw new Error("No suggestions returned. Try again.");
     mealsList = mealsList.concat(meals);
